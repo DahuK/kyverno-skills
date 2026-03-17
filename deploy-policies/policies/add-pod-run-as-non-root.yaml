@@ -1,0 +1,24 @@
+apiVersion: policies.kyverno.io/v1alpha1
+kind: MutatingPolicy
+metadata:
+  name: add-pod-run-as-non-root
+spec:
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  mutations:
+    - patchType: ApplyConfiguration
+      applyConfiguration:
+        expression: >-
+          Object{
+            spec: Object.spec{
+              securityContext: Object.spec.securityContext{
+                runAsNonRoot: has(object.spec.securityContext) && has(object.spec.securityContext.runAsNonRoot)
+                             ? object.spec.securityContext.runAsNonRoot
+                             : true          
+              }
+            }
+          }

@@ -1,0 +1,131 @@
+# RBAC Best Practices - ValidatingPolicy
+# Based on: https://github.com/nirmata/kyverno-policies/tree/main/rbac-best-practices-vpol
+
+---
+apiVersion: policies.kyverno.io/v1alpha1
+kind: ValidatingPolicy
+metadata:
+  name: restrict-wildcard-resources
+  annotations:
+    policies.kyverno.io/title: Restrict Wildcards in Resources
+    policies.kyverno.io/category: RBAC Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: ClusterRole, Role, RBAC
+    policies.kyverno.io/description: >-
+      Wildcards ('*') in resources grants access to all resources and does not follow
+      the principle of least privilege. This policy blocks any Role or ClusterRole that
+      contains a wildcard entry in the resources list.
+spec:
+  validationActions:
+    - Audit
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["*"]
+        resources: ["roles", "clusterroles"]
+        operations: ["CREATE", "UPDATE"]
+  validations:
+    - expression: >-
+        !has(object.rules) ||
+        !object.rules.exists(rule, has(rule.resources) && rule.resources.exists(resource, resource == '*'))
+      message: "Use of a wildcard ('*') in any resources is forbidden."
+
+---
+apiVersion: policies.kyverno.io/v1alpha1
+kind: ValidatingPolicy
+metadata:
+  name: restrict-escalation-verbs-roles
+  annotations:
+    policies.kyverno.io/title: Restrict Escalation Verbs in Roles
+    policies.kyverno.io/category: RBAC Best Practices
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: ClusterRole, Role, RBAC
+    policies.kyverno.io/description: >-
+      The verbs `impersonate`, `bind`, and `escalate` may all potentially lead to
+      privilege escalation and should be tightly controlled. This policy prevents
+      use of these verbs in Role or ClusterRole resources.
+spec:
+  validationActions:
+    - Audit
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["*"]
+        resources: ["roles", "clusterroles"]
+        operations: ["CREATE", "UPDATE"]
+  variables:
+    - name: forbiddenVerbs
+      expression: "['impersonate', 'bind', 'escalate']"
+  validations:
+    - expression: >-
+        !has(object.rules) ||
+        !object.rules.exists(rule, has(rule.verbs) &&
+        rule.verbs.exists(verb, verb in variables.forbiddenVerbs))
+      message: "Use of verbs `impersonate`, `bind`, and `escalate` are forbidden."
+
+---
+apiVersion: policies.kyverno.io/v1alpha1
+kind: ValidatingPolicy
+metadata:
+  name: restrict-automount-sa-token
+  annotations:
+    policies.kyverno.io/title: Restrict Auto-Mount of Service Account Tokens
+    policies.kyverno.io/category: RBAC Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod, ServiceAccount
+    policies.kyverno.io/description: >-
+      Kubernetes automatically mounts ServiceAccount credentials in Pods. The
+      automountServiceAccountToken field should be set to false to opt out of
+      automounting API credentials for a service account or a particular Pod.
+spec:
+  validationActions:
+    - Audit
+  evaluation:
+    background:
+      enabled: true
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["serviceaccounts"]
+        operations: ["CREATE", "UPDATE"]
+  validations:
+    - expression: >-
+        !has(object.automountServiceAccountToken) ||
+        object.automountServiceAccountToken == false
+      message: "Auto-mounting of Service Account tokens should be disabled by setting automountServiceAccountToken to false."
+
+---
+apiVersion: policies.kyverno.io/v1alpha1
+kind: ValidatingPolicy
+metadata:
+  name: restrict-binding-system-groups
+  annotations:
+    policies.kyverno.io/title: Restrict Binding to System Groups
+    policies.kyverno.io/category: RBAC Best Practices
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: ClusterRoleBinding, RoleBinding, RBAC
+    policies.kyverno.io/description: >-
+      Certain system groups exist in Kubernetes which grant permissions that are
+      used for certain system-level functions yet typically never appropriate for
+      other users. This policy prevents creating bindings to some of these groups
+      including system:anonymous, system:unauthenticated, and system:masters.
+spec:
+  validationActions:
+    - Audit
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["*"]
+        resources: ["clusterrolebindings", "rolebindings"]
+        operations: ["CREATE", "UPDATE"]
+  variables:
+    - name: forbiddenGroups
+      expression: "['system:anonymous', 'system:unauthenticated', 'system:masters']"
+  validations:
+    - expression: >-
+        !has(object.subjects) ||
+        !object.subjects.exists(subject,
+        subject.kind == 'Group' &&
+        subject.name in variables.forbiddenGroups)
+      message: "Binding to system groups system:anonymous, system:unauthenticated, and system:masters is forbidden."
