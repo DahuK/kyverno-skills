@@ -1,16 +1,18 @@
 ---
 name: kyverno-cli-audit
-description: "Audit Kubernetes resources for Kyverno policy violations using kubectl-kyverno CLI. Use when: user wants to check compliance, validate resources against policies, or generate violation reports BEFORE deploying policies. NOT for: actually deploying policies to cluster (use deploy-policies), checking if Kyverno is installed (use check-kyverno), or viewing existing violations from PolicyReports (use show-violations). This is a dry-run tool that does NOT modify the cluster."
+description: "Audit Kubernetes resources for Kyverno policy violations using Kyverno CLI. Use when: user wants to check compliance, validate resources against policies, or generate violation reports BEFORE deploying policies. NOT for: actually deploying policies to cluster (use deploy-policies), checking if Kyverno is installed (use check-kyverno), or viewing existing violations from PolicyReports (use show-violations). This is a dry-run tool that does NOT modify the cluster."
 metadata:
-  openclaw:
-    emoji: "🔍"
-    requires:
-      bins: ["kubectl-kyverno"]
+openclaw:
+emoji: "🔍"
+requires:
+bins: ["kyverno"]
 ---
 
 # kyverno-cli-audit
 
-Audit cluster resources for policy violations using Kyverno CLI. Dry-run only - does not deploy policies or modify the cluster.
+Audit cluster or local resources for policy violations using **Kyverno CLI**. The CLI validates and tests policy behavior on resources prior to adding them to a cluster; it is purpose-built for CI/CD and local validation. Dry-run only — does not deploy policies or modify the cluster.
+
+**Reference:** [Kyverno CLI — Kyverno Docs](https://kyverno.io/docs/subprojects/kyverno-cli/)
 
 ## When to Use
 
@@ -18,9 +20,9 @@ Audit cluster resources for policy violations using Kyverno CLI. Dry-run only - 
 - User wants to validate resources against policies before deployment
 - Need to check compliance in CI/CD pipelines
 - Testing policy changes without affecting the cluster
-- Generating policy violation reports
-- Comparing multiple clusters for compliance
-- Pre-deployment validation in staging environments
+- Generating policy violation reports (Policy Reports / ClusterReport)
+- Auditing resources from files, stdin, or live cluster
+- Comparing expected vs actual results for policies (apply then interpret)
 
 ## When NOT to Use
 
@@ -31,128 +33,196 @@ Audit cluster resources for policy violations using Kyverno CLI. Dry-run only - 
 - Need to install Kyverno itself (use install-kyverno instead)
 - User asks for help with Kyverno installation (use kyverno-help instead)
 
-## Commands
+## Core Command: `kyverno apply`
+
+The main command for auditing is **`kyverno apply`**. It performs a dry run of one or more policies against a set of resources. Use **`--policy-report`** (or **`-p`**) to get a structured policy report.
+
+### Resource sources
+
+- **Local files:** `--resource /path/to/resource.yaml` or `-r`
+- **Stdin:** `--resource -` (e.g. `kustomize build . | kyverno apply policy.yaml -r -`)
+- **Live cluster:** `--cluster` (uses current `kubectl` context; combine with `-n` for namespace)
 
 ### Basic audit commands
 
 ```bash
-# Audit default namespace with pod-security policies
-kubectl kyverno apply --policy-report --cluster --namespace default policies/pod-security.yaml
+# Audit resources in default namespace (cluster)
+kyverno apply policy.yaml --cluster --policy-report -n default
 
-# Audit all namespaces
-kubectl kyverno apply --policy-report --cluster --namespace all policies/
+# Audit all resources in cluster
+kyverno apply policy.yaml --cluster --policy-report
 
-# Audit specific context
-kubectl kyverno apply --policy-report --cluster --namespace production --context prod-cluster policies/
+# Audit local resource files (no cluster)
+kyverno apply policy.yaml --resource resource1.yaml --resource resource2.yaml --policy-report
+
+# Multiple policies and resources
+kyverno apply policy1.yaml policy2.yaml -r resource1.yaml -r resource2.yaml --policy-report
 ```
 
-### Policy set selection
+### Policy report + cluster (official combinations)
+
+| Policy       | Resource   | Cluster | Namespace     | Meaning                                              |
+|-------------|------------|---------|---------------|------------------------------------------------------|
+| policy.yaml | -r res.yaml| false  | —             | Apply policy to resources in res.yaml                |
+| policy.yaml | -r name    | true   | —             | Apply to resource named `name` in cluster            |
+| policy.yaml | —          | true   | —             | Apply to all matching resources in cluster           |
+| policy.yaml | -r name    | true   | -n=ns         | Apply to resource `name` in namespace `ns`            |
+| policy.yaml | —          | true   | -n=ns         | Apply to all matching resources in namespace `ns`     |
 
 ```bash
-# Pod Security Standards only
-kubectl kyverno apply --policy-report --cluster policies/pod-security.yaml
+# Example: audit all Pods in default namespace
+kyverno apply policies/pod-security.yaml --cluster --policy-report -n default
 
-# RBAC Best Practices
-kubectl kyverno apply --policy-report --cluster policies/rbac-best-practices.yaml
+# Example: audit specific resources by name in cluster
+kyverno apply policy.yaml -r nginx1 -r nginx2 --cluster --policy-report
 
-# Kubernetes Best Practices
-kubectl kyverno apply --policy-report --cluster policies/kubernetes-best-practices.yaml
-
-# All policies combined
-kubectl kyverno apply --policy-report --cluster policies/
+# Example: audit from local YAML only (no cluster)
+kyverno apply policy.yaml -r deployment.yaml --policy-report
 ```
 
-## Parameters
+### Policy exceptions and variables
 
-- **policySets** - Policy set to use:
-  - `pod-security` - Pod Security Standards (4 policies)
-  - `rbac-best-practices` - RBAC security (4 policies)
-  - `kubernetes-best-practices` - K8s best practices (5 policies)
-  - `all` - All policies combined (default)
-- **namespace** - Target namespace (default: `default`, use `all` for all namespaces)
-- **gitBranch** - Git branch for policies (default: `main`)
-- **namespace_exclude** - Namespaces to exclude (default: `kube-system,kyverno`)
-- **context** - Kubernetes context (optional, uses current if not specified)
+```bash
+# With policy exception
+kyverno apply policy.yaml -r resource.yaml --exception exception.yaml
 
-## Policy Sets Details
+# With values file (variables, namespaceSelector, etc.)
+kyverno apply policy1.yaml policy2.yaml -r r1.yaml -r r2.yaml -f values.yaml --policy-report
+```
 
-### pod-security (4 policies)
-- **disallow-capabilities** - Disallow capabilities beyond allowed list (high)
-- **disallow-host-namespaces** - Disallow sharing host namespaces (high)
-- **disallow-privileged-containers** - Disallow privileged mode (high)
-- **require-run-as-nonroot** - Require non-root execution (medium)
+### Audit as warnings and exit codes
 
-### rbac-best-practices (4 policies)
-- **restrict-wildcard-resources** - Block wildcards in roles (medium)
-- **restrict-escalation-verbs-roles** - Block impersonate/bind/escalate (high)
-- **restrict-automount-sa-token** - Disable SA token auto-mount (medium)
-- **restrict-binding-system-groups** - Block system group bindings (high)
+- **`--audit-warn`**: Treat policies with `failureAction: Audit` as warnings; can yield non-zero exit code when only audit failures exist.
+- **`--warn-exit-code N`**: When used with `--audit-warn`, exit with code N when there are warnings (e.g. for CI).
+- **`--warn-no-pass`**: Exit with warning code when no objects satisfy the policy (e.g. empty resources).
 
-### kubernetes-best-practices (5 policies)
-- **require-labels** - Require app.kubernetes.io/name label (medium)
-- **disallow-latest-tag** - Disallow :latest image tag (medium)
-- **require-pod-requests-limits** - Require resource requests/limits (medium)
-- **require-probes** - Require liveness/readiness probes (medium)
-- **disallow-default-namespace** - Disallow 'default' namespace (medium)
+```bash
+kyverno apply policy.yaml -r resource.yaml --audit-warn --warn-exit-code 3
+```
+
+## Policy types supported (apply)
+
+- **Kyverno ClusterPolicy / Policy** (validate, mutate, generate — reports for validate)
+- **ValidatingAdmissionPolicy** (+ binding)
+- **MutatingAdmissionPolicy** (+ binding)
+- **ValidatingPolicy** (Kyverno CEL; report kind: ClusterReport)
+
+For **ValidatingPolicy** (or policies using cluster lookups like `resource.Get()`), use **`--context-file`** (or **`-p`** in some docs) when not using `--cluster`, so the CLI can resolve context (e.g. ConfigMaps) from a file.
+
+## Parameters (for automation / wrappers)
+
+- **policySets** — Which policy set to use, e.g.:
+  - `pod-security` — Pod Security Standards
+  - `rbac-best-practices` — RBAC
+  - `kubernetes-best-practices` — K8s best practices
+  - `all` — All of the above (default when applicable)
+- **namespace** — Target namespace (`default` or `all`); with `--cluster` use `-n` or `-n=all`.
+- **gitBranch** — Git branch for policy repo (default: `main`)
+- **namespace_exclude** — Namespaces to exclude (e.g. `kube-system,kyverno`)
+- **context** — Kubernetes context (ensure `kubectl` context is set before `kyverno apply --cluster`)
+
+## Policy sets (example groupings)
+
+### pod-security
+- disallow-capabilities, disallow-host-namespaces, disallow-privileged-containers, require-run-as-nonroot
+
+### rbac-best-practices
+- restrict-wildcard-resources, restrict-escalation-verbs-roles, restrict-automount-sa-token, restrict-binding-system-groups
+
+### kubernetes-best-practices
+- require-labels, disallow-latest-tag, require-pod-requests-limits, require-probes, disallow-default-namespace
 
 ## Output
 
-Returns JSON array of violations:
+With **`--policy-report`**, output is a report (e.g. ClusterPolicyReport or ClusterReport for ValidatingPolicy), for example:
 
-```json
-[
-  {
-    "policy": "require-run-as-nonroot",
-    "rule": "run-as-non-root",
-    "message": "Running as root is not allowed",
-    "category": "Pod Security Standards (Baseline)",
-    "severity": "medium",
-    "result": "fail",
-    "resources": ["Pod/default/nginx-pod"]
-  }
-]
+```yaml
+# ClusterPolicyReport (validate policies)
+apiVersion: wgpolicyk8s.io/v1alpha1
+kind: ClusterPolicyReport
+metadata:
+  name: clusterpolicyreport
+results:
+  - message: "Validation rule 'validate-resources' succeeded."
+    policy: require-pod-requests-limits
+    resources: [{ apiVersion: v1, kind: Pod, name: nginx1, namespace: default }]
+    rule: validate-resources
+    scored: true
+    status: pass
+  - message: "Validation error: ..."
+    policy: require-pod-requests-limits
+    resources: [{ apiVersion: v1, kind: Pod, name: nginx2, namespace: default }]
+    rule: validate-resources
+    scored: true
+    status: fail
+summary:
+  error: 0
+  fail: 1
+  pass: 1
+  skip: 0
+  warn: 0
 ```
 
-## Common Workflows
+You can parse this (e.g. with `jq`/yq) to produce a JSON array of violations for downstream tools.
+
+## Common workflows
 
 ### CI/CD validation
 
-```
-# 1. Audit before deployment
-kyverno audit --policySets pod-security --namespace staging
+```bash
+# 1. Audit before deploy (cluster)
+kyverno apply policies/pod-security.yaml --cluster --policy-report -n staging
 
-# 2. If violations found, fix before merging
-# 3. If no violations, proceed with deployment
+# 2. Or from built manifests (no cluster)
+kustomize build overlays/staging | kyverno apply policies/pod-security.yaml -r - --policy-report
+
+# 3. Fail CI on failures or warnings
+kyverno apply policy.yaml -r manifest.yaml --audit-warn --warn-exit-code 3
 ```
 
 ### Multi-environment audit
 
-```
-# Audit development
-kyverno audit --policySets all --namespace all --context dev-cluster
+```bash
+# Use kubectl context then apply
+kubectl config use-context dev-cluster
+kyverno apply policies/ --cluster --policy-report -n all
 
-# Audit staging
-kyverno audit --policySets all --namespace all --context staging-cluster
-
-# Audit production
-kyverno audit --policySets all --namespace all --context prod-cluster
+kubectl config use-context prod-cluster
+kyverno apply policies/ --cluster --policy-report -n all
 ```
 
-### Compliance reporting
+### Compliance report from cluster
 
+```bash
+kyverno apply policy.yaml --cluster --policy-report > compliance-report.yaml
+# Or filter by severity from report (depends on report schema)
 ```
-# Generate compliance report
-kyverno audit --policySets all --namespace all > compliance-report.json
 
-# Focus on high severity
-kyverno audit --policySets pod-security --namespace all | jq '.[] | select(.severity == "high")'
+## Installation
+
+Kyverno CLI is a **standalone binary** (separate from the in-cluster Kyverno controller). Prefer standalone when using with kustomize.
+
+```bash
+# Homebrew
+brew install kyverno
+
+# Krew (kubectl plugin)
+kubectl krew install kyverno
+kubectl kyverno version
+
+# Manual (example Linux amd64)
+# curl -LO https://github.com/kyverno/kyverno/releases/download/v1.12.0/kyverno-cli_v1.12.0_linux_x86_64.tar.gz
+# tar -xvf kyverno-cli_*.tar.gz && sudo cp kyverno /usr/local/bin/
+
+# Verify
+kyverno version
 ```
 
 ## Notes
 
-- Requires kubectl-kyverno CLI to be available
-- This is a dry-run tool - does NOT modify the cluster
-- Returns empty array `[]` if no violations found
-- All 13 policies included in `all` set
-- Recommended workflow: audit → fix → deploy → monitor
-- Use before deploy-policies to preview violations
+- Requires the **`kyverno`** binary (CLI), not the in-cluster Kyverno image.
+- **Dry-run only:** `kyverno apply` does not modify cluster or deploy policies.
+- Use **`--policy-report`** to get structured pass/fail/skip/warn and summary counts.
+- For policies that need cluster lookups (e.g. `resource.Get()`), either run with **`--cluster`** or supply **`--context-file`** when testing locally.
+- Recommended flow: audit (apply + policy-report) → fix → deploy policies → monitor.
+- Optional: use **`kyverno test`** with `kyverno-test.yaml` to assert expected pass/fail/skip for policy tests; use this skill for ad-hoc or report-oriented audits.
